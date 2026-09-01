@@ -61,6 +61,28 @@ post "/jobs" do |req, res|
 end
 ~~~
 
+## D1-backed counter
+
+After creating a database and binding it as `UZUMIBI_DB`:
+
+~~~ruby
+post "/hearts" do |req, res|
+  rows = Uzumibi::D1.query(
+    "UZUMIBI_DB",
+    "INSERT INTO hearts (path, count) VALUES (?, 1)
+       ON CONFLICT(path) DO UPDATE SET count = count + 1
+       RETURNING count",
+    [req.params[:path]]
+  )
+
+  res.return(
+    200,
+    { "content-type" => "application/json" },
+    JSON.generate({ "count" => rows[0]["count"] })
+  )
+end
+~~~
+
 ## Rate limit by client IP
 
 After uncommenting the `ratelimits` block and naming the binding `UZUMIBI_RATE_LIMITER`:

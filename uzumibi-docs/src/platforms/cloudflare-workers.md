@@ -122,6 +122,7 @@ The following Ruby APIs are currently defined:
 | `Uzumibi::Secret.get(name)` | Worker environment binding with that name |
 | `Uzumibi::Queue.send(binding_name, message)` | Queue producer binding |
 | `Uzumibi::RateLimit.limit(binding_name, key)` | Rate limiting binding `limit({ key })` |
+| `Uzumibi::D1.query(binding_name, sql, params = [])` | D1 binding `prepare(sql).bind(*params).all()` |
 | `Uzumibi::Access.team=` / `.get_identity(token)` | Cloudflare Access identity endpoint |
 
 See [Cloudflare Access identity](../external-services/cloudflare-access.md) for setup and request handling.
@@ -159,6 +160,35 @@ allowed = Uzumibi::RateLimit.limit(
   "UZUMIBI_RATE_LIMITER",
   req.headers["cf-connecting-ip"] || "anonymous"
 )
+~~~
+
+Example D1 access:
+
+~~~ruby
+rows = Uzumibi::D1.query(
+  "UZUMIBI_DB",
+  "SELECT count FROM hearts WHERE path = ?",
+  [path]
+)
+count = rows.empty? ? 0 : rows[0]["count"]
+~~~
+
+Rows arrive as an Array of Hashes with String keys. Statements that return no rows answer with an empty Array, so use SQLite's `RETURNING` clause when the written row is wanted:
+
+~~~ruby
+rows = Uzumibi::D1.query(
+  "UZUMIBI_DB",
+  "INSERT INTO hearts (path, count) VALUES (?, 1)
+     ON CONFLICT(path) DO UPDATE SET count = count + 1
+     RETURNING count",
+  [path]
+)
+~~~
+
+Create the database and uncomment the `d1_databases` block in `wrangler.jsonc`:
+
+~~~bash
+pnpm exec wrangler d1 create my-app-db
 ~~~
 
 `Uzumibi::RateLimit.limit` also takes the Wrangler binding name. Uncomment the `ratelimits` block in `wrangler.jsonc` to create the binding; it needs no account-side resource. `namespace_id` is a number you pick, and bindings that share it share counters even across Workers. `simple.period` must be `10` or `60` seconds.
@@ -207,6 +237,7 @@ See the [Cloudflare Queues Wrangler commands](https://developers.cloudflare.com/
 - External fetch and KV reads currently use fixed 64 KiB host-call result buffers.
 - Secret reads currently use an 8 KiB result buffer.
 - Rate limiting exposes only the `success` flag of the binding response.
+- D1 rows are carried as JSON through the same 64 KiB buffer. A result that does not fit raises rather than truncating, since half a JSON document cannot be parsed. `meta` (`changes`, `last_row_id`, timings) is not exposed.
 - Responses are text-decoded by the JavaScript adapter.
 - The Queue consumer processes messages one at a time inside each delivered batch.
 

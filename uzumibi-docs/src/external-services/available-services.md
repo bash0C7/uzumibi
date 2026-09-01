@@ -50,6 +50,14 @@ Uzumibi::Queue.send(binding_name, message)
 
 `binding_name` is the producer binding in `wrangler.jsonc`, for example `"UZUMIBI_QUEUE"`. The message is converted to a String.
 
+### D1
+
+~~~ruby
+Uzumibi::D1.query(binding_name, sql, params = [])   # Array of row Hashes
+~~~
+
+`binding_name` is the D1 binding in `wrangler.jsonc`, for example `"UZUMIBI_DB"`. Bind parameters are passed positionally for each `?` in the statement. Rows come back as an Array of Hashes with String keys; statements that return no rows answer with an empty Array, so use SQLite's `RETURNING` clause when the written row is wanted. `meta` is not exposed.
+
 ### Rate limiting
 
 ~~~ruby

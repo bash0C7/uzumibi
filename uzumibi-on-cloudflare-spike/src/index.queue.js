@@ -251,6 +251,43 @@ export default {
 					return success ? 1 : 0;
 				},
 
+				// D1.query(binding_name, sql, params_json) -> JSON array of rows
+				uzumibi_cf_d1_query: async (bindingNamePtr, bindingNameSize, sqlPtr, sqlSize, paramsPtr, paramsSize, resultPtr, resultMaxSize) => {
+					const memory = exports.memory;
+					const bindingName = decoder.decode(new Uint8Array(memory.buffer, bindingNamePtr, bindingNameSize));
+					const sql = decoder.decode(new Uint8Array(memory.buffer, sqlPtr, sqlSize));
+					const paramsJson = paramsSize > 0
+						? decoder.decode(new Uint8Array(memory.buffer, paramsPtr, paramsSize))
+						: "[]";
+
+					const db = env[bindingName];
+					if (!db || typeof db.prepare !== "function") {
+						console.error(`D1 binding '${bindingName}' not found`);
+						return -1;
+					}
+
+					let rows;
+					try {
+						const params = JSON.parse(paramsJson);
+						const statement = params.length > 0
+							? db.prepare(sql).bind(...params)
+							: db.prepare(sql);
+						rows = (await statement.all()).results ?? [];
+					} catch (error) {
+						console.error(`D1 query failed: ${(error && error.message) || error}`);
+						return -2;
+					}
+
+					// Truncating would hand back unparsable JSON, so an oversized result fails.
+					const rowBytes = encoder.encode(JSON.stringify(rows));
+					if (rowBytes.length > resultMaxSize) {
+						console.error(`D1 result of ${rowBytes.length} bytes exceeds the ${resultMaxSize} byte buffer`);
+						return -3;
+					}
+					new Uint8Array(memory.buffer, resultPtr, resultMaxSize).set(rowBytes);
+					return rowBytes.length;
+				},
+
 				uzumibi_cf_message_ack: async (idPtr, idSize) => {
 					const id = decoder.decode(new Uint8Array(exports.memory.buffer, idPtr, idSize));
 					getMessage(id).ack();

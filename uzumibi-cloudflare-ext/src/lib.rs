@@ -98,6 +98,16 @@ unsafe extern "C" {
         key_ptr: *const u8,
         key_size: usize,
     ) -> i32;
+    unsafe fn uzumibi_cf_d1_query(
+        binding_name_ptr: *const u8,
+        binding_name_size: usize,
+        sql_ptr: *const u8,
+        sql_size: usize,
+        params_ptr: *const u8,
+        params_size: usize,
+        result_ptr: *mut u8,
+        result_max_size: usize,
+    ) -> i32;
 }
 
 // ---- Debug console ----
@@ -315,6 +325,41 @@ fn cf_rate_limit(binding_name: &str, key: &str) -> Result<bool, String> {
                 "Failed to check rate limit: return code {}",
                 result
             )),
+        }
+    }
+}
+
+/// Rows come back as a JSON array string. Unlike the other reads, an oversized
+/// result is an error rather than a truncation: half a JSON document cannot be
+/// parsed, so the host returns -3 instead of writing what fits.
+#[cfg(feature = "enable-external")]
+fn cf_d1_query(binding_name: &str, sql: &str, params_json: &str) -> Result<String, String> {
+    const BUFFER_SIZE: usize = 65536;
+    let mut buffer = vec![0u8; BUFFER_SIZE];
+
+    unsafe {
+        let result = uzumibi_cf_d1_query(
+            binding_name.as_ptr(),
+            binding_name.len(),
+            sql.as_ptr(),
+            sql.len(),
+            params_json.as_ptr(),
+            params_json.len(),
+            buffer.as_mut_ptr(),
+            BUFFER_SIZE,
+        );
+        match result {
+            len if len >= 0 => {
+                let len = len as usize;
+                String::from_utf8(buffer[..len].to_vec())
+                    .map_err(|e| format!("Failed to decode UTF-8: {}", e))
+            }
+            -1 => Err(format!("D1 binding '{}' not found", binding_name)),
+            -3 => Err(format!(
+                "D1 result does not fit in the {} byte buffer",
+                BUFFER_SIZE
+            )),
+            _ => Err(format!("D1 query failed with return code: {}", result)),
         }
     }
 }
@@ -646,6 +691,39 @@ fn uzumibi_rate_limit_class_limit(
     }
 }
 
+/// D1.query(binding_name, sql, params = []) -> Array of row Hashes
+///
+/// Statements that return no rows (INSERT / UPDATE / DELETE) answer with an
+/// empty Array. Use SQLite's RETURNING clause when the written row is wanted.
+#[cfg(feature = "enable-external")]
+fn uzumibi_d1_class_query(
+    vm: &mut VM,
+    args: &[Rc<RObject>],
+) -> Result<Rc<RObject>, mrubyedge::Error> {
+    let binding_name_obj = &args[0];
+    let binding_name = mrb_funcall(vm, binding_name_obj.clone().into(), "to_s", &[])?;
+    let binding_name: String = binding_name.as_ref().try_into()?;
+
+    let sql_obj = &args[1];
+    let sql = mrb_funcall(vm, sql_obj.clone().into(), "to_s", &[])?;
+    let sql: String = sql.as_ref().try_into()?;
+
+    // Bind parameters travel as a JSON array, the same way rows come back.
+    let params_json: String = match args.get(2) {
+        Some(params) => {
+            let dumped = mrubyedge_serde_json::mrb_json_class_dump(vm, &[params.clone()])?;
+            dumped.as_ref().try_into()?
+        }
+        None => "[]".to_string(),
+    };
+
+    let rows_json = cf_d1_query(&binding_name, &sql, &params_json)
+        .map_err(|e| mrubyedge::Error::RuntimeError(format!("Failed to query D1: {}", e)))?;
+
+    let rows_robj = RObject::string(rows_json).to_refcount_assigned();
+    mrubyedge_serde_json::mrb_json_class_load(vm, &[rows_robj])
+}
+
 // ---- Queue consumer support (only when queue feature is active) ----
 
 /// Message.ack! -> delegates to JS
@@ -950,6 +1028,10 @@ pub fn init_cloudflare_ext(vm: &mut VM) {
         // Uzumibi::Queue.send(queue_name, message)
         let queue_class = vm.define_class("Queue", None, Some(uzumibi_module.clone()));
         mrb_define_class_cmethod(vm, queue_class, "send", Box::new(uzumibi_queue_class_send));
+
+        // Uzumibi::D1.query(binding_name, sql, params = [])
+        let d1_class = vm.define_class("D1", None, Some(uzumibi_module.clone()));
+        mrb_define_class_cmethod(vm, d1_class, "query", Box::new(uzumibi_d1_class_query));
 
         // Uzumibi::RateLimit.limit(binding_name, key)
         let rate_limit_class = vm.define_class("RateLimit", None, Some(uzumibi_module.clone()));
