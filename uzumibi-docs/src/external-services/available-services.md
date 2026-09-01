@@ -50,6 +50,14 @@ Uzumibi::Queue.send(binding_name, message)
 
 `binding_name` is the producer binding in `wrangler.jsonc`, for example `"UZUMIBI_QUEUE"`. The message is converted to a String.
 
+### Rate limiting
+
+~~~ruby
+Uzumibi::RateLimit.limit(binding_name, key)   # true within the limit, false over it
+~~~
+
+`binding_name` is the rate limiting binding in `wrangler.jsonc`, for example `"UZUMIBI_RATE_LIMITER"`. `key` is any string you choose to count by, such as a client IP or a path. Only the `success` flag of the binding response is exposed.
+
 ### Cloudflare Access identity
 
 ~~~ruby

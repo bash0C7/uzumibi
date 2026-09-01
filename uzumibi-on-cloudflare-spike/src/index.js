@@ -240,6 +240,21 @@ export default {
 					await queue.send(message);
 					return 0;
 				},
+
+				// RateLimit.limit(binding_name, key) -> 1 within the limit, 0 over it
+				uzumibi_cf_rate_limit: async (bindingNamePtr, bindingNameSize, keyPtr, keySize) => {
+					const memory = exports.memory;
+					const bindingName = decoder.decode(new Uint8Array(memory.buffer, bindingNamePtr, bindingNameSize));
+					const key = decoder.decode(new Uint8Array(memory.buffer, keyPtr, keySize));
+
+					const limiter = env[bindingName];
+					if (!limiter || typeof limiter.limit !== "function") {
+						console.error(`Rate limit binding '${bindingName}' not found`);
+						return -1;
+					}
+					const { success } = await limiter.limit({ key });
+					return success ? 1 : 0;
+				},
 			},
 		};
 

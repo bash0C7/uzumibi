@@ -61,6 +61,22 @@ post "/jobs" do |req, res|
 end
 ~~~
 
+## Rate limit by client IP
+
+After uncommenting the `ratelimits` block and naming the binding `UZUMIBI_RATE_LIMITER`:
+
+~~~ruby
+post "/comments" do |req, res|
+  key = req.headers["cf-connecting-ip"] || "anonymous"
+
+  if Uzumibi::RateLimit.limit("UZUMIBI_RATE_LIMITER", key)
+    res.return(201, { "content-type" => "text/plain" }, "created\n")
+  else
+    res.return(429, { "content-type" => "text/plain" }, "too many requests\n")
+  end
+end
+~~~
+
 ## Queue consumer
 
 This example belongs in `lib/consumer.rb` of a project generated with `--features queue`:

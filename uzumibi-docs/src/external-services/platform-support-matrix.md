@@ -12,6 +12,7 @@ This matrix describes the generated Cloudflare variants.
 | `Uzumibi::LegacyKV.get/set` | No | Yes | Yes |
 | `Uzumibi::Secret.get` | No | Yes | Yes |
 | `Uzumibi::Queue.send` | No | Yes, with a producer binding | Yes |
+| `Uzumibi::RateLimit.limit` | No | Yes, with a rate limiting binding | Yes |
 | `Uzumibi::Consumer` and `Message` | No | No | Yes |
 | Asyncify / `wasm-opt` required | No | Yes | Yes |
 

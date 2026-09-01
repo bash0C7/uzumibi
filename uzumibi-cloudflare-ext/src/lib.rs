@@ -92,6 +92,12 @@ unsafe extern "C" {
         result_ptr: *mut u8,
         result_max_size: usize,
     ) -> i32;
+    unsafe fn uzumibi_cf_rate_limit(
+        binding_name_ptr: *const u8,
+        binding_name_size: usize,
+        key_ptr: *const u8,
+        key_size: usize,
+    ) -> i32;
 }
 
 // ---- Debug console ----
@@ -285,6 +291,28 @@ fn cf_queue_send(queue_name: &str, message: &str) -> Result<(), String> {
             0 => Ok(()),
             _ => Err(format!(
                 "Failed to send queue message: return code {}",
+                result
+            )),
+        }
+    }
+}
+
+/// The rate limiting binding answers with a single flag, so no result buffer is needed.
+/// `1` means the request is within the limit, `0` means it is over.
+#[cfg(feature = "enable-external")]
+fn cf_rate_limit(binding_name: &str, key: &str) -> Result<bool, String> {
+    unsafe {
+        let result = uzumibi_cf_rate_limit(
+            binding_name.as_ptr(),
+            binding_name.len(),
+            key.as_ptr(),
+            key.len(),
+        );
+        match result {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err(format!(
+                "Failed to check rate limit: return code {}",
                 result
             )),
         }
@@ -595,6 +623,29 @@ fn uzumibi_queue_class_send(
     Ok(RObject::boolean(true).to_refcount_assigned())
 }
 
+/// RateLimit.limit(binding_name, key) -> true (within the limit) / false (over it)
+#[cfg(feature = "enable-external")]
+fn uzumibi_rate_limit_class_limit(
+    vm: &mut VM,
+    args: &[Rc<RObject>],
+) -> Result<Rc<RObject>, mrubyedge::Error> {
+    let binding_name_obj = &args[0];
+    let binding_name = mrb_funcall(vm, binding_name_obj.clone().into(), "to_s", &[])?;
+    let binding_name: String = binding_name.as_ref().try_into()?;
+
+    let key_obj = &args[1];
+    let key = mrb_funcall(vm, key_obj.clone().into(), "to_s", &[])?;
+    let key: String = key.as_ref().try_into()?;
+
+    match cf_rate_limit(&binding_name, &key) {
+        Ok(allowed) => Ok(RObject::boolean(allowed).to_refcount_assigned()),
+        Err(e) => Err(mrubyedge::Error::RuntimeError(format!(
+            "Failed to check rate limit: {}",
+            e
+        ))),
+    }
+}
+
 // ---- Queue consumer support (only when queue feature is active) ----
 
 /// Message.ack! -> delegates to JS
@@ -899,6 +950,15 @@ pub fn init_cloudflare_ext(vm: &mut VM) {
         // Uzumibi::Queue.send(queue_name, message)
         let queue_class = vm.define_class("Queue", None, Some(uzumibi_module.clone()));
         mrb_define_class_cmethod(vm, queue_class, "send", Box::new(uzumibi_queue_class_send));
+
+        // Uzumibi::RateLimit.limit(binding_name, key)
+        let rate_limit_class = vm.define_class("RateLimit", None, Some(uzumibi_module.clone()));
+        mrb_define_class_cmethod(
+            vm,
+            rate_limit_class,
+            "limit",
+            Box::new(uzumibi_rate_limit_class_limit),
+        );
 
         // Uzumibi::Access.team= / Uzumibi::Access.get_identity(token)
         let access_class = vm.define_class("Access", None, Some(uzumibi_module.clone()));

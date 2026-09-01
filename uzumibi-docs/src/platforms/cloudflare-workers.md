@@ -121,6 +121,7 @@ The following Ruby APIs are currently defined:
 | `Uzumibi::LegacyKV.get(key)` / `.set(key, value)` | generated `UzumibiKVObject` Durable Object |
 | `Uzumibi::Secret.get(name)` | Worker environment binding with that name |
 | `Uzumibi::Queue.send(binding_name, message)` | Queue producer binding |
+| `Uzumibi::RateLimit.limit(binding_name, key)` | Rate limiting binding `limit({ key })` |
 | `Uzumibi::Access.team=` / `.get_identity(token)` | Cloudflare Access identity endpoint |
 
 See [Cloudflare Access identity](../external-services/cloudflare-access.md) for setup and request handling.
@@ -150,6 +151,17 @@ pnpm exec wrangler kv namespace create UZUMIBI_KV
 ~~~
 
 For Queue producers, `Uzumibi::Queue.send` takes the Wrangler binding name, such as `"UZUMIBI_QUEUE"`, rather than the Cloudflare resource name.
+
+Example rate limiting:
+
+~~~ruby
+allowed = Uzumibi::RateLimit.limit(
+  "UZUMIBI_RATE_LIMITER",
+  req.headers["cf-connecting-ip"] || "anonymous"
+)
+~~~
+
+`Uzumibi::RateLimit.limit` also takes the Wrangler binding name. Uncomment the `ratelimits` block in `wrangler.jsonc` to create the binding; it needs no account-side resource. `namespace_id` is a number you pick, and bindings that share it share counters even across Workers. `simple.period` must be `10` or `60` seconds.
 
 ## Queue consumer feature
 
@@ -194,6 +206,7 @@ See the [Cloudflare Queues Wrangler commands](https://developers.cloudflare.com/
 - The base HTTP build cannot call asynchronous external Workers APIs; use `enable-external`.
 - External fetch and KV reads currently use fixed 64 KiB host-call result buffers.
 - Secret reads currently use an 8 KiB result buffer.
+- Rate limiting exposes only the `success` flag of the binding response.
 - Responses are text-decoded by the JavaScript adapter.
 - The Queue consumer processes messages one at a time inside each delivered batch.
 
