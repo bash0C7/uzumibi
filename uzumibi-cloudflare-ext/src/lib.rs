@@ -98,6 +98,7 @@ unsafe extern "C" {
         key_ptr: *const u8,
         key_size: usize,
     ) -> i32;
+    unsafe fn uzumibi_cf_assets_exist(path_ptr: *const u8, path_size: usize) -> i32;
     unsafe fn uzumibi_cf_d1_query(
         binding_name_ptr: *const u8,
         binding_name_size: usize,
@@ -310,6 +311,22 @@ fn cf_queue_send(queue_name: &str, message: &str) -> Result<(), String> {
 /// The rate limiting binding answers with a single flag, so no result buffer is needed.
 /// `1` means the request is within the limit, `0` means it is over.
 #[cfg(feature = "enable-external")]
+/// Ask the assets binding whether a path is served, without fetching it into
+/// Ruby. `fetch_assets` only says "hand this request to the platform", so a
+/// handler that needs to know about some *other* path had nowhere to ask.
+#[cfg(feature = "enable-external")]
+fn cf_assets_exist(path: &str) -> Result<bool, String> {
+    unsafe {
+        let result = uzumibi_cf_assets_exist(path.as_ptr(), path.len());
+        match result {
+            0 => Ok(false),
+            1 => Ok(true),
+            -1 => Err("assets binding not found".to_string()),
+            _ => Err(format!("Failed to look up asset: return code {}", result)),
+        }
+    }
+}
+
 fn cf_rate_limit(binding_name: &str, key: &str) -> Result<bool, String> {
     unsafe {
         let result = uzumibi_cf_rate_limit(
@@ -666,6 +683,25 @@ fn uzumibi_queue_class_send(
     })?;
 
     Ok(RObject::boolean(true).to_refcount_assigned())
+}
+
+/// Assets.exist?(path) -> true when the assets binding serves that path
+#[cfg(feature = "enable-external")]
+fn uzumibi_assets_class_exist(
+    vm: &mut VM,
+    args: &[Rc<RObject>],
+) -> Result<Rc<RObject>, mrubyedge::Error> {
+    let path_obj = &args[0];
+    let path = mrb_funcall(vm, path_obj.clone().into(), "to_s", &[])?;
+    let path: String = path.as_ref().try_into()?;
+
+    match cf_assets_exist(&path) {
+        Ok(found) => Ok(RObject::boolean(found).to_refcount_assigned()),
+        Err(e) => Err(mrubyedge::Error::RuntimeError(format!(
+            "Failed to look up asset: {}",
+            e
+        ))),
+    }
 }
 
 /// RateLimit.limit(binding_name, key) -> true (within the limit) / false (over it)
@@ -1032,6 +1068,15 @@ pub fn init_cloudflare_ext(vm: &mut VM) {
         // Uzumibi::D1.query(binding_name, sql, params = [])
         let d1_class = vm.define_class("D1", None, Some(uzumibi_module.clone()));
         mrb_define_class_cmethod(vm, d1_class, "query", Box::new(uzumibi_d1_class_query));
+
+        // Uzumibi::Assets.exist?(path)
+        let assets_class = vm.define_class("Assets", None, Some(uzumibi_module.clone()));
+        mrb_define_class_cmethod(
+            vm,
+            assets_class,
+            "exist?",
+            Box::new(uzumibi_assets_class_exist),
+        );
 
         // Uzumibi::RateLimit.limit(binding_name, key)
         let rate_limit_class = vm.define_class("RateLimit", None, Some(uzumibi_module.clone()));

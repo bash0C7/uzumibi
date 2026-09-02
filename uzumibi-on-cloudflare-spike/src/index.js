@@ -256,6 +256,29 @@ export default {
 					return success ? 1 : 0;
 				},
 
+				// Assets.exist?(path) -> 1 when the assets binding serves that path
+				uzumibi_cf_assets_exist: async (pathPtr, pathSize) => {
+					const memory = exports.memory;
+					const path = decoder.decode(new Uint8Array(memory.buffer, pathPtr, pathSize));
+
+					if (!env.ASSETS || typeof env.ASSETS.fetch !== "function") {
+						console.error("Assets binding not found");
+						return -1;
+					}
+					// The assets binding wants an absolute URL; only the path is read.
+					const base = typeof request !== "undefined" && request
+						? new URL(request.url).origin
+						: "http://assets.local";
+					let url;
+					try {
+						url = new URL(path, base);
+					} catch {
+						return 0;
+					}
+					const response = await env.ASSETS.fetch(new Request(url));
+					return response.ok ? 1 : 0;
+				},
+
 				// D1.query(binding_name, sql, params_json) -> JSON array of rows
 				uzumibi_cf_d1_query: async (bindingNamePtr, bindingNameSize, sqlPtr, sqlSize, paramsPtr, paramsSize, resultPtr, resultMaxSize) => {
 					const memory = exports.memory;

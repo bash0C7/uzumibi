@@ -14,6 +14,7 @@ This matrix describes the generated Cloudflare variants.
 | `Uzumibi::Queue.send` | No | Yes, with a producer binding | Yes |
 | `Uzumibi::RateLimit.limit` | No | Yes, with a rate limiting binding | Yes |
 | `Uzumibi::D1.query` | No | Yes, with a D1 binding | Yes |
+| `Uzumibi::Assets.exist?` | No | Yes, with an assets binding | Yes |
 | `Uzumibi::Consumer` and `Message` | No | No | Yes |
 | Asyncify / `wasm-opt` required | No | Yes | Yes |
 

@@ -58,6 +58,14 @@ Uzumibi::D1.query(binding_name, sql, params = [])   # Array of row Hashes
 
 `binding_name` is the D1 binding in `wrangler.jsonc`, for example `"UZUMIBI_DB"`. Bind parameters are passed positionally for each `?` in the statement. Rows come back as an Array of Hashes with String keys; statements that return no rows answer with an empty Array, so use SQLite's `RETURNING` clause when the written row is wanted. `meta` is not exposed.
 
+### Assets
+
+~~~ruby
+Uzumibi::Assets.exist?(path)   # true / false
+~~~
+
+Asks the `ASSETS` binding whether it serves `path`, without reading the file into Ruby. `fetch_assets` only says "hand *this* request to the platform", so a handler that has to know about some other path -- checking that an article exists before writing a row for it, say -- had nowhere to ask.
+
 ### Rate limiting
 
 ~~~ruby
