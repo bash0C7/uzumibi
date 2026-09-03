@@ -99,6 +99,20 @@ post "/hearts" do |req, res|
 end
 ~~~
 
+## Look up a static asset
+
+~~~ruby
+get "/download/:file" do |req, res|
+  path = "/downloads/#{req.params[:file]}"
+
+  if Uzumibi::Assets.exist?(path)
+    fetch_assets
+  else
+    res.return(404, { "content-type" => "text/plain" }, "not found\n")
+  end
+end
+~~~
+
 ## Queue consumer
 
 This example belongs in `lib/consumer.rb` of a project generated with `--features queue`:

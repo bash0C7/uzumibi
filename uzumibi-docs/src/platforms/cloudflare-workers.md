@@ -123,6 +123,7 @@ The following Ruby APIs are currently defined:
 | `Uzumibi::Queue.send(binding_name, message)` | Queue producer binding |
 | `Uzumibi::RateLimit.limit(binding_name, key)` | Rate limiting binding `limit({ key })` |
 | `Uzumibi::D1.query(binding_name, sql, params = [])` | D1 binding `prepare(sql).bind(*params).all()` |
+| `Uzumibi::Assets.exist?(path)` | `ASSETS` binding `fetch` (checks `response.ok`) |
 | `Uzumibi::Access.team=` / `.get_identity(token)` | Cloudflare Access identity endpoint |
 
 See [Cloudflare Access identity](../external-services/cloudflare-access.md) for setup and request handling.
@@ -162,6 +163,8 @@ allowed = Uzumibi::RateLimit.limit(
 )
 ~~~
 
+`Uzumibi::RateLimit.limit` also takes the Wrangler binding name. Uncomment the `ratelimits` block in `wrangler.jsonc` to create the binding; it needs no account-side resource. `namespace_id` is a number you pick, and bindings that share it share counters even across Workers. `simple.period` must be `10` or `60` seconds.
+
 Example D1 access:
 
 ~~~ruby
@@ -191,7 +194,17 @@ Create the database and uncomment the `d1_databases` block in `wrangler.jsonc`:
 pnpm exec wrangler d1 create my-app-db
 ~~~
 
-`Uzumibi::RateLimit.limit` also takes the Wrangler binding name. Uncomment the `ratelimits` block in `wrangler.jsonc` to create the binding; it needs no account-side resource. `namespace_id` is a number you pick, and bindings that share it share counters even across Workers. `simple.period` must be `10` or `60` seconds.
+Example asset lookup:
+
+~~~ruby
+if Uzumibi::Assets.exist?("/index.html")
+  fetch_assets
+else
+  res.return(404, { "content-type" => "text/plain" }, "not found\n")
+end
+~~~
+
+`Uzumibi::Assets.exist?` answers only for the `ASSETS` binding already configured in the base `wrangler.jsonc`; no separate setup is needed.
 
 ## Queue consumer feature
 
