@@ -98,7 +98,6 @@ unsafe extern "C" {
         key_ptr: *const u8,
         key_size: usize,
     ) -> i32;
-    unsafe fn uzumibi_cf_assets_exist(path_ptr: *const u8, path_size: usize) -> i32;
     unsafe fn uzumibi_cf_d1_query(
         binding_name_ptr: *const u8,
         binding_name_size: usize,
@@ -109,6 +108,7 @@ unsafe extern "C" {
         result_ptr: *mut u8,
         result_max_size: usize,
     ) -> i32;
+    unsafe fn uzumibi_cf_assets_exist(path_ptr: *const u8, path_size: usize) -> i32;
 }
 
 // ---- Debug console ----
@@ -308,25 +308,7 @@ fn cf_queue_send(queue_name: &str, message: &str) -> Result<(), String> {
     }
 }
 
-/// The rate limiting binding answers with a single flag, so no result buffer is needed.
-/// `1` means the request is within the limit, `0` means it is over.
 #[cfg(feature = "enable-external")]
-/// Ask the assets binding whether a path is served, without fetching it into
-/// Ruby. `fetch_assets` only says "hand this request to the platform", so a
-/// handler that needs to know about some *other* path had nowhere to ask.
-#[cfg(feature = "enable-external")]
-fn cf_assets_exist(path: &str) -> Result<bool, String> {
-    unsafe {
-        let result = uzumibi_cf_assets_exist(path.as_ptr(), path.len());
-        match result {
-            0 => Ok(false),
-            1 => Ok(true),
-            -1 => Err("assets binding not found".to_string()),
-            _ => Err(format!("Failed to look up asset: return code {}", result)),
-        }
-    }
-}
-
 fn cf_rate_limit(binding_name: &str, key: &str) -> Result<bool, String> {
     unsafe {
         let result = uzumibi_cf_rate_limit(
@@ -346,9 +328,6 @@ fn cf_rate_limit(binding_name: &str, key: &str) -> Result<bool, String> {
     }
 }
 
-/// Rows come back as a JSON array string. Unlike the other reads, an oversized
-/// result is an error rather than a truncation: half a JSON document cannot be
-/// parsed, so the host returns -3 instead of writing what fits.
 #[cfg(feature = "enable-external")]
 fn cf_d1_query(binding_name: &str, sql: &str, params_json: &str) -> Result<String, String> {
     const BUFFER_SIZE: usize = 65536;
@@ -372,11 +351,25 @@ fn cf_d1_query(binding_name: &str, sql: &str, params_json: &str) -> Result<Strin
                     .map_err(|e| format!("Failed to decode UTF-8: {}", e))
             }
             -1 => Err(format!("D1 binding '{}' not found", binding_name)),
+            // Half a JSON document cannot be parsed, so the host refuses to truncate.
             -3 => Err(format!(
                 "D1 result does not fit in the {} byte buffer",
                 BUFFER_SIZE
             )),
             _ => Err(format!("D1 query failed with return code: {}", result)),
+        }
+    }
+}
+
+#[cfg(feature = "enable-external")]
+fn cf_assets_exist(path: &str) -> Result<bool, String> {
+    unsafe {
+        let result = uzumibi_cf_assets_exist(path.as_ptr(), path.len());
+        match result {
+            0 => Ok(false),
+            1 => Ok(true),
+            -1 => Err("assets binding not found".to_string()),
+            _ => Err(format!("Failed to look up asset: return code {}", result)),
         }
     }
 }
@@ -685,26 +678,7 @@ fn uzumibi_queue_class_send(
     Ok(RObject::boolean(true).to_refcount_assigned())
 }
 
-/// Assets.exist?(path) -> true when the assets binding serves that path
-#[cfg(feature = "enable-external")]
-fn uzumibi_assets_class_exist(
-    vm: &mut VM,
-    args: &[Rc<RObject>],
-) -> Result<Rc<RObject>, mrubyedge::Error> {
-    let path_obj = &args[0];
-    let path = mrb_funcall(vm, path_obj.clone().into(), "to_s", &[])?;
-    let path: String = path.as_ref().try_into()?;
-
-    match cf_assets_exist(&path) {
-        Ok(found) => Ok(RObject::boolean(found).to_refcount_assigned()),
-        Err(e) => Err(mrubyedge::Error::RuntimeError(format!(
-            "Failed to look up asset: {}",
-            e
-        ))),
-    }
-}
-
-/// RateLimit.limit(binding_name, key) -> true (within the limit) / false (over it)
+/// RateLimit.limit(binding_name, key) -> true | false
 #[cfg(feature = "enable-external")]
 fn uzumibi_rate_limit_class_limit(
     vm: &mut VM,
@@ -727,10 +701,9 @@ fn uzumibi_rate_limit_class_limit(
     }
 }
 
-/// D1.query(binding_name, sql, params = []) -> Array of row Hashes
+/// D1.query(binding_name, sql, params = []) -> Array of Hash
 ///
-/// Statements that return no rows (INSERT / UPDATE / DELETE) answer with an
-/// empty Array. Use SQLite's RETURNING clause when the written row is wanted.
+/// Statements returning no rows answer with an empty Array.
 #[cfg(feature = "enable-external")]
 fn uzumibi_d1_class_query(
     vm: &mut VM,
@@ -745,12 +718,11 @@ fn uzumibi_d1_class_query(
     let sql: String = sql.as_ref().try_into()?;
 
     // Bind parameters travel as a JSON array, the same way rows come back.
-    let params_json: String = match args.get(2) {
-        Some(params) => {
-            let dumped = mrubyedge_serde_json::mrb_json_class_dump(vm, &[params.clone()])?;
-            dumped.as_ref().try_into()?
-        }
-        None => "[]".to_string(),
+    let params_json: String = if args.len() > 2 {
+        let dumped = mrubyedge_serde_json::mrb_json_class_dump(vm, &[args[2].clone()])?;
+        dumped.as_ref().try_into()?
+    } else {
+        "[]".to_string()
     };
 
     let rows_json = cf_d1_query(&binding_name, &sql, &params_json)
@@ -758,6 +730,25 @@ fn uzumibi_d1_class_query(
 
     let rows_robj = RObject::string(rows_json).to_refcount_assigned();
     mrubyedge_serde_json::mrb_json_class_load(vm, &[rows_robj])
+}
+
+/// Assets.exist?(path) -> true | false
+#[cfg(feature = "enable-external")]
+fn uzumibi_assets_class_exist(
+    vm: &mut VM,
+    args: &[Rc<RObject>],
+) -> Result<Rc<RObject>, mrubyedge::Error> {
+    let path_obj = &args[0];
+    let path = mrb_funcall(vm, path_obj.clone().into(), "to_s", &[])?;
+    let path: String = path.as_ref().try_into()?;
+
+    match cf_assets_exist(&path) {
+        Ok(found) => Ok(RObject::boolean(found).to_refcount_assigned()),
+        Err(e) => Err(mrubyedge::Error::RuntimeError(format!(
+            "Failed to look up asset: {}",
+            e
+        ))),
+    }
 }
 
 // ---- Queue consumer support (only when queue feature is active) ----
@@ -1065,6 +1056,15 @@ pub fn init_cloudflare_ext(vm: &mut VM) {
         let queue_class = vm.define_class("Queue", None, Some(uzumibi_module.clone()));
         mrb_define_class_cmethod(vm, queue_class, "send", Box::new(uzumibi_queue_class_send));
 
+        // Uzumibi::RateLimit.limit(binding_name, key)
+        let rate_limit_class = vm.define_class("RateLimit", None, Some(uzumibi_module.clone()));
+        mrb_define_class_cmethod(
+            vm,
+            rate_limit_class,
+            "limit",
+            Box::new(uzumibi_rate_limit_class_limit),
+        );
+
         // Uzumibi::D1.query(binding_name, sql, params = [])
         let d1_class = vm.define_class("D1", None, Some(uzumibi_module.clone()));
         mrb_define_class_cmethod(vm, d1_class, "query", Box::new(uzumibi_d1_class_query));
@@ -1076,15 +1076,6 @@ pub fn init_cloudflare_ext(vm: &mut VM) {
             assets_class,
             "exist?",
             Box::new(uzumibi_assets_class_exist),
-        );
-
-        // Uzumibi::RateLimit.limit(binding_name, key)
-        let rate_limit_class = vm.define_class("RateLimit", None, Some(uzumibi_module.clone()));
-        mrb_define_class_cmethod(
-            vm,
-            rate_limit_class,
-            "limit",
-            Box::new(uzumibi_rate_limit_class_limit),
         );
 
         // Uzumibi::Access.team= / Uzumibi::Access.get_identity(token)
