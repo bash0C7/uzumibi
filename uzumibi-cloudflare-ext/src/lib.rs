@@ -321,7 +321,7 @@ fn cf_rate_limit(binding_name: &str, key: &str) -> Result<bool, String> {
             0 => Ok(false),
             1 => Ok(true),
             _ => Err(format!(
-                "Failed to check rate limit: return code {}",
+                "Unexpected return value from rate_limit: {}",
                 result
             )),
         }
@@ -345,17 +345,17 @@ fn cf_d1_query(binding_name: &str, sql: &str, params_json: &str) -> Result<Strin
             BUFFER_SIZE,
         );
         match result {
-            len if len >= 0 => {
-                let len = len as usize;
-                String::from_utf8(buffer[..len].to_vec())
-                    .map_err(|e| format!("Failed to decode UTF-8: {}", e))
-            }
             -1 => Err(format!("D1 binding '{}' not found", binding_name)),
             // Half a JSON document cannot be parsed, so the host refuses to truncate.
             -3 => Err(format!(
                 "D1 result does not fit in the {} byte buffer",
                 BUFFER_SIZE
             )),
+            len if len >= 0 => {
+                let len = len as usize;
+                String::from_utf8(buffer[..len].to_vec())
+                    .map_err(|e| format!("Failed to decode UTF-8: {}", e))
+            }
             _ => Err(format!("D1 query failed with return code: {}", result)),
         }
     }
@@ -369,7 +369,10 @@ fn cf_assets_exist(path: &str) -> Result<bool, String> {
             0 => Ok(false),
             1 => Ok(true),
             -1 => Err("assets binding not found".to_string()),
-            _ => Err(format!("Failed to look up asset: return code {}", result)),
+            _ => Err(format!(
+                "Unexpected return value from assets_exist: {}",
+                result
+            )),
         }
     }
 }
@@ -1231,21 +1234,10 @@ pub fn dispatch_queue_message(vm: &mut VM, buf: &[u8]) -> Result<(), mrubyedge::
     Ok(())
 }
 
-// ---- Characterization tests for the RateLimit / Assets / D1 mruby gem methods ----
-//
-// These pin the current behavior of `uzumibi_rate_limit_class_limit`,
-// `uzumibi_assets_class_exist` and `uzumibi_d1_class_query` against fake host
-// implementations of the three `enable-external` extern "C" imports they call
-// through `cf_rate_limit` / `cf_assets_exist` / `cf_d1_query`. On native test
-// targets the wasm host functions are otherwise undefined, so the fakes below
-// are linked in as the actual symbols the crate's `unsafe extern "C"` block
-// declares.
 #[cfg(all(test, feature = "enable-external"))]
 mod tests {
     use super::*;
     use std::cell::RefCell;
-
-    // ---- Fake host state ----
 
     #[derive(Default)]
     struct FakeHostState {
@@ -1279,8 +1271,7 @@ mod tests {
         RObject::string(s.to_string()).to_refcount_assigned()
     }
 
-    // ---- Fake implementations of the host functions under test ----
-
+    // These stand in for the wasm host imports on native test builds.
     #[unsafe(no_mangle)]
     pub extern "C" fn uzumibi_cf_rate_limit(
         binding_name_ptr: *const u8,
@@ -1348,8 +1339,6 @@ mod tests {
         })
     }
 
-    // ---- RateLimit.limit ----
-
     #[test]
     fn test_rate_limit_true_when_host_returns_1() {
         let mut vm = setup_vm();
@@ -1397,13 +1386,11 @@ mod tests {
         match err {
             mrubyedge::Error::RuntimeError(msg) => assert_eq!(
                 msg,
-                "Failed to check rate limit: Failed to check rate limit: return code -1"
+                "Failed to check rate limit: Unexpected return value from rate_limit: -1"
             ),
             other => panic!("expected RuntimeError, got {:?}", other),
         }
     }
-
-    // ---- Assets.exist? ----
 
     #[test]
     fn test_assets_exist_true_when_host_returns_1() {
@@ -1466,13 +1453,11 @@ mod tests {
         match err {
             mrubyedge::Error::RuntimeError(msg) => assert_eq!(
                 msg,
-                "Failed to look up asset: Failed to look up asset: return code -2"
+                "Failed to look up asset: Unexpected return value from assets_exist: -2"
             ),
             other => panic!("expected RuntimeError, got {:?}", other),
         }
     }
-
-    // ---- D1.query ----
 
     #[test]
     fn test_d1_query_returns_array_of_row_hashes() {

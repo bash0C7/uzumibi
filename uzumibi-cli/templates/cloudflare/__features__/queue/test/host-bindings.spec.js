@@ -5,12 +5,58 @@ import {
     writeD1RowsToWasm,
 } from "../src/host-bindings.js";
 
-function createExports() {
+function createMemory() {
     const memory = new WebAssembly.Memory({ initial: 4 });
     return {
         memory,
         readResult: (ptr, length) =>
             new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, length)),
+    };
+}
+
+function createLimiter(success) {
+    const calls = [];
+    return {
+        calls,
+        limit: async ({ key }) => {
+            calls.push(key);
+            return { success };
+        },
+    };
+}
+
+function createAssets(statusByPath) {
+    const requests = [];
+    return {
+        requests,
+        fetch: async (request) => {
+            requests.push(request.url);
+            const status = statusByPath[new URL(request.url).pathname] ?? 404;
+            return new Response(null, { status });
+        },
+    };
+}
+
+function createD1(results, { throwing } = {}) {
+    const sql = [];
+    const bindArgs = [];
+    const statement = {
+        bind: (...args) => {
+            bindArgs.push(args);
+            return statement;
+        },
+        all: async () => ({ results }),
+    };
+    return {
+        sql,
+        bindArgs,
+        prepare: (query) => {
+            if (throwing) {
+                throw new Error(throwing);
+            }
+            sql.push(query);
+            return statement;
+        },
     };
 }
 
@@ -20,17 +66,17 @@ afterEach(() => {
 
 describe("checkRateLimit", () => {
     it("returns 1 when the limiter reports success", async () => {
-        const limiter = { limit: vi.fn(async () => ({ success: true })) };
+        const limiter = createLimiter(true);
         const env = { RATE_LIMITER: limiter };
 
         const result = await checkRateLimit(env, "RATE_LIMITER", "user-1");
 
         expect(result).toBe(1);
-        expect(limiter.limit).toHaveBeenCalledWith({ key: "user-1" });
+        expect(limiter.calls).toEqual(["user-1"]);
     });
 
     it("returns 0 when the limiter reports failure", async () => {
-        const limiter = { limit: vi.fn(async () => ({ success: false })) };
+        const limiter = createLimiter(false);
         const env = { RATE_LIMITER: limiter };
 
         const result = await checkRateLimit(env, "RATE_LIMITER", "user-1");
@@ -59,19 +105,19 @@ describe("checkRateLimit", () => {
     });
 
     it("forwards the given key to limit()", async () => {
-        const limiter = { limit: vi.fn(async () => ({ success: true })) };
+        const limiter = createLimiter(true);
         const env = { RATE_LIMITER: limiter };
 
         await checkRateLimit(env, "RATE_LIMITER", "some-specific-key");
 
-        expect(limiter.limit).toHaveBeenCalledWith({ key: "some-specific-key" });
+        expect(limiter.calls).toEqual(["some-specific-key"]);
     });
 });
 
 describe("assetExists", () => {
     it("returns 1 when the response is ok", async () => {
-        const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
-        const env = { ASSETS: { fetch: fetchMock } };
+        const assets = createAssets({ "/img/a.png": 200 });
+        const env = { ASSETS: assets };
 
         const result = await assetExists(env, "/img/a.png", "https://example.com");
 
@@ -79,8 +125,8 @@ describe("assetExists", () => {
     });
 
     it("returns 0 when the response is a 404", async () => {
-        const fetchMock = vi.fn(async () => new Response(null, { status: 404 }));
-        const env = { ASSETS: { fetch: fetchMock } };
+        const assets = createAssets({ "/missing.png": 404 });
+        const env = { ASSETS: assets };
 
         const result = await assetExists(env, "/missing.png", "https://example.com");
 
@@ -98,46 +144,30 @@ describe("assetExists", () => {
     });
 
     it("passes the resolved URL to ASSETS.fetch", async () => {
-        let requestedUrl;
-        const fetchMock = vi.fn(async (request) => {
-            requestedUrl = request.url;
-            return new Response(null, { status: 200 });
-        });
-        const env = { ASSETS: { fetch: fetchMock } };
+        const assets = createAssets({ "/img/a.png": 200 });
+        const env = { ASSETS: assets };
 
         await assetExists(env, "/img/a.png", "https://example.com");
 
-        expect(requestedUrl).toBe("https://example.com/img/a.png");
+        expect(assets.requests).toEqual(["https://example.com/img/a.png"]);
     });
 
     it("returns 0 without calling fetch when the URL cannot be parsed", async () => {
-        const fetchMock = vi.fn(async () => new Response(null, { status: 200 }));
-        const env = { ASSETS: { fetch: fetchMock } };
+        const assets = createAssets({});
+        const env = { ASSETS: assets };
 
         const result = await assetExists(env, "http://[", "http://x");
 
         expect(result).toBe(0);
-        expect(fetchMock).not.toHaveBeenCalled();
+        expect(assets.requests).toEqual([]);
     });
 });
 
 describe("writeD1RowsToWasm", () => {
-    function createDb(results) {
-        const bind = vi.fn(function bound() {
-            return this;
-        });
-        const statement = {
-            bind,
-            all: vi.fn(async () => ({ results })),
-        };
-        const prepare = vi.fn(() => statement);
-        return { prepare, bind, all: statement.all };
-    }
-
     it("writes the JSON rows into wasm memory and returns the byte length", async () => {
-        const wasm = createExports();
+        const wasm = createMemory();
         const rows = [{ id: 1, name: "uzumibi" }];
-        const db = createDb(rows);
+        const db = createD1(rows);
         const env = { DB: db };
 
         const length = await writeD1RowsToWasm(
@@ -156,8 +186,8 @@ describe("writeD1RowsToWasm", () => {
     });
 
     it("calls bind with parsed params when params is non-empty", async () => {
-        const wasm = createExports();
-        const db = createDb([]);
+        const wasm = createMemory();
+        const db = createD1([]);
         const env = { DB: db };
 
         await writeD1RowsToWasm(
@@ -170,22 +200,22 @@ describe("writeD1RowsToWasm", () => {
             65536,
         );
 
-        expect(db.bind).toHaveBeenCalledWith(42);
+        expect(db.bindArgs).toEqual([[42]]);
     });
 
     it("does not call bind when paramsJson is '[]'", async () => {
-        const wasm = createExports();
-        const db = createDb([]);
+        const wasm = createMemory();
+        const db = createD1([]);
         const env = { DB: db };
 
         await writeD1RowsToWasm(wasm, env, "DB", "select 1", "[]", 0, 65536);
 
-        expect(db.bind).not.toHaveBeenCalled();
+        expect(db.bindArgs).toEqual([]);
     });
 
     it("writes '[]' when results is undefined", async () => {
-        const wasm = createExports();
-        const db = createDb(undefined);
+        const wasm = createMemory();
+        const db = createD1(undefined);
         const env = { DB: db };
 
         const length = await writeD1RowsToWasm(wasm, env, "DB", "select 1", "[]", 0, 65536);
@@ -196,7 +226,7 @@ describe("writeD1RowsToWasm", () => {
 
     it("returns -1 and logs when the D1 binding is missing", async () => {
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-        const wasm = createExports();
+        const wasm = createMemory();
         const env = {};
 
         const result = await writeD1RowsToWasm(wasm, env, "DB", "select 1", "[]", 0, 65536);
@@ -207,11 +237,9 @@ describe("writeD1RowsToWasm", () => {
 
     it("returns -2 and logs when the statement throws", async () => {
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-        const wasm = createExports();
-        const prepare = vi.fn(() => {
-            throw new Error("syntax error");
-        });
-        const env = { DB: { prepare } };
+        const wasm = createMemory();
+        const db = createD1(undefined, { throwing: "syntax error" });
+        const env = { DB: db };
 
         const result = await writeD1RowsToWasm(wasm, env, "DB", "not sql", "[]", 0, 65536);
 
@@ -221,9 +249,9 @@ describe("writeD1RowsToWasm", () => {
 
     it("returns -3 and logs when the result exceeds the buffer size, writing nothing", async () => {
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-        const wasm = createExports();
+        const wasm = createMemory();
         const rows = [{ id: 1, name: "x".repeat(100) }];
-        const db = createDb(rows);
+        const db = createD1(rows);
         const env = { DB: db };
         const resultMaxSize = 10;
         const rowBytes = new TextEncoder().encode(JSON.stringify(rows));

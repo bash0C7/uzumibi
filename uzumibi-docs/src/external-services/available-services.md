@@ -69,7 +69,7 @@ Uzumibi::D1.query(binding_name, sql, params = [])   # Array of row Hashes
 ### Assets
 
 ~~~ruby
-Uzumibi::Assets.exist?(path)   # true / false
+Uzumibi::Assets.exist?(path)   # true or false
 ~~~
 
 Asks the `ASSETS` binding whether it serves `path`, without reading the file into Ruby. Useful when a handler needs to know about a path other than the current request, since `fetch_assets` only hands the current request to the platform.

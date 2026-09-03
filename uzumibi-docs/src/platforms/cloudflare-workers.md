@@ -250,7 +250,9 @@ See the [Cloudflare Queues Wrangler commands](https://developers.cloudflare.com/
 - External fetch and KV reads currently use fixed 64 KiB host-call result buffers.
 - Secret reads currently use an 8 KiB result buffer.
 - Rate limiting exposes only the `success` flag of the binding response.
-- D1 rows are carried as JSON through the same 64 KiB buffer. A result that does not fit raises rather than truncating, since half a JSON document cannot be parsed. `meta` (`changes`, `last_row_id`, timings) is not exposed.
+- `Uzumibi::Assets.exist?` performs a fetch against the assets binding and exposes only whether the response was OK.
+- D1 rows are carried as JSON through the same 64 KiB buffer, and a result that does not fit raises rather than truncating.
+- D1 `meta` (`changes`, `last_row_id`, timings) is not exposed.
 - Responses are text-decoded by the JavaScript adapter.
 - The Queue consumer processes messages one at a time inside each delivered batch.
 

@@ -37,7 +37,7 @@ steps:
   check_queue_files:
     desc: Check Queue-specific files and configuration
     exec:
-      command: cd {{ vars.tmpdir }}/{{ vars.project_name }} && test -f lib/consumer.rb && grep -q '"consumers"' wrangler.jsonc && node -e 'const p = require("./package.json"); if (p.uzumibi.httpMaxBytes !== 65536 || !p.scripts["build:wasm:queue"]) process.exit(1)' && grep -q '"ratelimits"' wrangler.jsonc && grep -q '"d1_databases"' wrangler.jsonc && test -f src/host-bindings.js && test -f test/host-bindings.spec.js
+      command: cd {{ vars.tmpdir }}/{{ vars.project_name }} && test -f lib/consumer.rb && test -f src/host-bindings.js && test -f test/host-bindings.spec.js && grep -q '"consumers"' wrangler.jsonc && grep -q '"ratelimits"' wrangler.jsonc && grep -q '"d1_databases"' wrangler.jsonc && node -e 'const p = require("./package.json"); if (p.uzumibi.httpMaxBytes !== 65536 || !p.scripts["build:wasm:queue"]) process.exit(1)'
     test: current.exit_code == 0
 
   pnpm_install:
