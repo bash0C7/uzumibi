@@ -23,20 +23,6 @@
         }
     ],
     /**
-	 * D1
-	 * Used for Uzumibi::D1.query
-     * Uncomment the following block to enable the database binding.
-     * Create the database first: wrangler d1 create $$PROJECT_NAME_KEBAB$$-db
-	 * https://developers.cloudflare.com/d1/
-	 */
-    // "d1_databases": [
-    //     {
-    //         "binding": "UZUMIBI_DB",
-    //         "database_name": "$$PROJECT_NAME_KEBAB$$-db",
-    //         "database_id": "<YOUR_D1_DATABASE_ID>"
-    //     }
-    // ],
-    /**
 	 * Rate Limiting
 	 * Used for Uzumibi::RateLimit.limit
      * Uncomment the following block to enable the rate limiting binding.
@@ -52,6 +38,20 @@
     //             "limit": 100,
     //             "period": 60
     //         }
+    //     }
+    // ],
+    /**
+	 * D1
+	 * Used for Uzumibi::D1.query
+     * Uncomment the following block to enable the database binding.
+     * Create the database first: wrangler d1 create $$PROJECT_NAME_KEBAB$$-db
+	 * https://developers.cloudflare.com/d1/
+	 */
+    // "d1_databases": [
+    //     {
+    //         "binding": "UZUMIBI_DB",
+    //         "database_name": "$$PROJECT_NAME_KEBAB$$-db",
+    //         "database_id": "<YOUR_D1_DATABASE_ID>"
     //     }
     // ],
     /**

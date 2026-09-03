@@ -50,6 +50,14 @@ Uzumibi::Queue.send(binding_name, message)
 
 `binding_name` is the producer binding in `wrangler.jsonc`, for example `"UZUMIBI_QUEUE"`. The message is converted to a String.
 
+### Rate limiting
+
+~~~ruby
+Uzumibi::RateLimit.limit(binding_name, key)   # true within the limit, false over it
+~~~
+
+`binding_name` is the rate limiting binding in `wrangler.jsonc`, for example `"UZUMIBI_RATE_LIMITER"`. `key` is any string you choose to count by, such as a client IP or a path. Only the `success` flag of the binding response is exposed.
+
 ### D1
 
 ~~~ruby
@@ -64,15 +72,7 @@ Uzumibi::D1.query(binding_name, sql, params = [])   # Array of row Hashes
 Uzumibi::Assets.exist?(path)   # true / false
 ~~~
 
-Asks the `ASSETS` binding whether it serves `path`, without reading the file into Ruby. `fetch_assets` only says "hand *this* request to the platform", so a handler that has to know about some other path -- checking that an article exists before writing a row for it, say -- had nowhere to ask.
-
-### Rate limiting
-
-~~~ruby
-Uzumibi::RateLimit.limit(binding_name, key)   # true within the limit, false over it
-~~~
-
-`binding_name` is the rate limiting binding in `wrangler.jsonc`, for example `"UZUMIBI_RATE_LIMITER"`. `key` is any string you choose to count by, such as a client IP or a path. Only the `success` flag of the binding response is exposed.
+Asks the `ASSETS` binding whether it serves `path`, without reading the file into Ruby. Useful when a handler needs to know about a path other than the current request, since `fetch_assets` only hands the current request to the platform.
 
 ### Cloudflare Access identity
 
