@@ -1239,3 +1239,386 @@ pub fn dispatch_queue_message(vm: &mut VM, buf: &[u8]) -> Result<(), mrubyedge::
 
     Ok(())
 }
+
+// ---- Characterization tests for the RateLimit / Assets / D1 mruby gem methods ----
+//
+// These pin the current behavior of `uzumibi_rate_limit_class_limit`,
+// `uzumibi_assets_class_exist` and `uzumibi_d1_class_query` against fake host
+// implementations of the three `enable-external` extern "C" imports they call
+// through `cf_rate_limit` / `cf_assets_exist` / `cf_d1_query`. On native test
+// targets the wasm host functions are otherwise undefined, so the fakes below
+// are linked in as the actual symbols the crate's `unsafe extern "C"` block
+// declares.
+#[cfg(all(test, feature = "enable-external"))]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    // ---- Fake host state ----
+
+    #[derive(Default)]
+    struct FakeHostState {
+        rate_limit_return: i32,
+        rate_limit_last_call: Option<(String, String)>,
+
+        assets_return: i32,
+        assets_last_call: Option<String>,
+
+        // `None` means "succeed": write `d1_payload` into the result buffer
+        // and return its length. `Some(code)` means "fail": return `code`
+        // without writing anything.
+        d1_return_override: Option<i32>,
+        d1_payload: Vec<u8>,
+        d1_last_call: Option<(String, String, String, usize)>,
+    }
+
+    thread_local! {
+        static FAKE_HOST: RefCell<FakeHostState> = RefCell::new(FakeHostState::default());
+    }
+
+    /// Reset the fake host state and hand back a fresh VM (its prelude seeds
+    /// the String/Array/Hash classes needed by `mrb_funcall(.., "to_s", ..)`
+    /// and friends).
+    fn setup_vm() -> VM {
+        FAKE_HOST.with(|s| *s.borrow_mut() = FakeHostState::default());
+        VM::empty()
+    }
+
+    fn rstring(s: &str) -> Rc<RObject> {
+        RObject::string(s.to_string()).to_refcount_assigned()
+    }
+
+    // ---- Fake implementations of the host functions under test ----
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn uzumibi_cf_rate_limit(
+        binding_name_ptr: *const u8,
+        binding_name_size: usize,
+        key_ptr: *const u8,
+        key_size: usize,
+    ) -> i32 {
+        let binding_name =
+            unsafe { std::slice::from_raw_parts(binding_name_ptr, binding_name_size) };
+        let binding_name = String::from_utf8_lossy(binding_name).to_string();
+        let key = unsafe { std::slice::from_raw_parts(key_ptr, key_size) };
+        let key = String::from_utf8_lossy(key).to_string();
+
+        FAKE_HOST.with(|s| {
+            let mut s = s.borrow_mut();
+            s.rate_limit_last_call = Some((binding_name, key));
+            s.rate_limit_return
+        })
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn uzumibi_cf_assets_exist(path_ptr: *const u8, path_size: usize) -> i32 {
+        let path = unsafe { std::slice::from_raw_parts(path_ptr, path_size) };
+        let path = String::from_utf8_lossy(path).to_string();
+
+        FAKE_HOST.with(|s| {
+            let mut s = s.borrow_mut();
+            s.assets_last_call = Some(path);
+            s.assets_return
+        })
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn uzumibi_cf_d1_query(
+        binding_name_ptr: *const u8,
+        binding_name_size: usize,
+        sql_ptr: *const u8,
+        sql_size: usize,
+        params_ptr: *const u8,
+        params_size: usize,
+        result_ptr: *mut u8,
+        result_max_size: usize,
+    ) -> i32 {
+        let binding_name =
+            unsafe { std::slice::from_raw_parts(binding_name_ptr, binding_name_size) };
+        let binding_name = String::from_utf8_lossy(binding_name).to_string();
+        let sql = unsafe { std::slice::from_raw_parts(sql_ptr, sql_size) };
+        let sql = String::from_utf8_lossy(sql).to_string();
+        let params_json = unsafe { std::slice::from_raw_parts(params_ptr, params_size) };
+        let params_json = String::from_utf8_lossy(params_json).to_string();
+
+        FAKE_HOST.with(|s| {
+            let mut s = s.borrow_mut();
+            s.d1_last_call = Some((binding_name, sql, params_json, result_max_size));
+            match s.d1_return_override {
+                Some(code) => code,
+                None => {
+                    let len = s.d1_payload.len();
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(s.d1_payload.as_ptr(), result_ptr, len);
+                    }
+                    len as i32
+                }
+            }
+        })
+    }
+
+    // ---- RateLimit.limit ----
+
+    #[test]
+    fn test_rate_limit_true_when_host_returns_1() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().rate_limit_return = 1);
+        let args = [rstring("MY_LIMITER"), rstring("user-1")];
+
+        let result = uzumibi_rate_limit_class_limit(&mut vm, &args).unwrap();
+        let allowed: bool = result.as_ref().try_into().unwrap();
+        assert!(allowed);
+    }
+
+    #[test]
+    fn test_rate_limit_false_when_host_returns_0() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().rate_limit_return = 0);
+        let args = [rstring("MY_LIMITER"), rstring("user-1")];
+
+        let result = uzumibi_rate_limit_class_limit(&mut vm, &args).unwrap();
+        let allowed: bool = result.as_ref().try_into().unwrap();
+        assert!(!allowed);
+    }
+
+    #[test]
+    fn test_rate_limit_passes_binding_name_and_key_through() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().rate_limit_return = 1);
+        let args = [rstring("MY_LIMITER"), rstring("user-42")];
+
+        uzumibi_rate_limit_class_limit(&mut vm, &args).unwrap();
+
+        let call = FAKE_HOST
+            .with(|s| s.borrow().rate_limit_last_call.clone())
+            .unwrap();
+        assert_eq!(call.0, "MY_LIMITER");
+        assert_eq!(call.1, "user-42");
+    }
+
+    #[test]
+    fn test_rate_limit_error_on_return_code_negative_1() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().rate_limit_return = -1);
+        let args = [rstring("MY_LIMITER"), rstring("user-1")];
+
+        let err = uzumibi_rate_limit_class_limit(&mut vm, &args).unwrap_err();
+        match err {
+            mrubyedge::Error::RuntimeError(msg) => assert_eq!(
+                msg,
+                "Failed to check rate limit: Failed to check rate limit: return code -1"
+            ),
+            other => panic!("expected RuntimeError, got {:?}", other),
+        }
+    }
+
+    // ---- Assets.exist? ----
+
+    #[test]
+    fn test_assets_exist_true_when_host_returns_1() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().assets_return = 1);
+        let args = [rstring("/index.html")];
+
+        let result = uzumibi_assets_class_exist(&mut vm, &args).unwrap();
+        let found: bool = result.as_ref().try_into().unwrap();
+        assert!(found);
+    }
+
+    #[test]
+    fn test_assets_exist_false_when_host_returns_0() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().assets_return = 0);
+        let args = [rstring("/missing.html")];
+
+        let result = uzumibi_assets_class_exist(&mut vm, &args).unwrap();
+        let found: bool = result.as_ref().try_into().unwrap();
+        assert!(!found);
+    }
+
+    #[test]
+    fn test_assets_exist_passes_path_through() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().assets_return = 1);
+        let args = [rstring("/some/nested/path.png")];
+
+        uzumibi_assets_class_exist(&mut vm, &args).unwrap();
+
+        let call = FAKE_HOST
+            .with(|s| s.borrow().assets_last_call.clone())
+            .unwrap();
+        assert_eq!(call, "/some/nested/path.png");
+    }
+
+    #[test]
+    fn test_assets_exist_error_on_return_code_negative_1() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().assets_return = -1);
+        let args = [rstring("/index.html")];
+
+        let err = uzumibi_assets_class_exist(&mut vm, &args).unwrap_err();
+        match err {
+            mrubyedge::Error::RuntimeError(msg) => {
+                assert_eq!(msg, "Failed to look up asset: assets binding not found")
+            }
+            other => panic!("expected RuntimeError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_assets_exist_error_on_return_code_negative_2() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().assets_return = -2);
+        let args = [rstring("/index.html")];
+
+        let err = uzumibi_assets_class_exist(&mut vm, &args).unwrap_err();
+        match err {
+            mrubyedge::Error::RuntimeError(msg) => assert_eq!(
+                msg,
+                "Failed to look up asset: Failed to look up asset: return code -2"
+            ),
+            other => panic!("expected RuntimeError, got {:?}", other),
+        }
+    }
+
+    // ---- D1.query ----
+
+    #[test]
+    fn test_d1_query_returns_array_of_row_hashes() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| {
+            let mut s = s.borrow_mut();
+            s.d1_payload = br#"[{"count":3,"path":"/a"}]"#.to_vec();
+        });
+        let args = [
+            rstring("UZUMIBI_DB"),
+            rstring("SELECT COUNT(*) AS count, path FROM t"),
+        ];
+
+        let result = uzumibi_d1_class_query(&mut vm, &args).unwrap();
+        let rows: Vec<Rc<RObject>> = result.as_ref().try_into().unwrap();
+        assert_eq!(rows.len(), 1);
+
+        let row = rows[0].clone();
+        let count = mrb_funcall(&mut vm, Some(row.clone()), "[]", &[rstring("count")]).unwrap();
+        let count: i64 = count.as_ref().try_into().unwrap();
+        assert_eq!(count, 3);
+
+        let path = mrb_funcall(&mut vm, Some(row), "[]", &[rstring("path")]).unwrap();
+        let path: String = path.as_ref().try_into().unwrap();
+        assert_eq!(path, "/a");
+    }
+
+    #[test]
+    fn test_d1_query_empty_payload_returns_empty_array() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| {
+            s.borrow_mut().d1_payload = b"[]".to_vec();
+        });
+        let args = [rstring("UZUMIBI_DB"), rstring("DELETE FROM t")];
+
+        let result = uzumibi_d1_class_query(&mut vm, &args).unwrap();
+        let rows: Vec<Rc<RObject>> = result.as_ref().try_into().unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_d1_query_two_args_sends_empty_params_json() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| {
+            s.borrow_mut().d1_payload = b"[]".to_vec();
+        });
+        let args = [rstring("UZUMIBI_DB"), rstring("SELECT 1")];
+
+        uzumibi_d1_class_query(&mut vm, &args).unwrap();
+
+        let call = FAKE_HOST.with(|s| s.borrow().d1_last_call.clone()).unwrap();
+        assert_eq!(call.2, "[]");
+    }
+
+    #[test]
+    fn test_d1_query_three_args_sends_params_as_json_array() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| {
+            s.borrow_mut().d1_payload = b"[]".to_vec();
+        });
+        let params = RObject::array(vec![
+            rstring("a"),
+            RObject::integer(1).to_refcount_assigned(),
+        ])
+        .to_refcount_assigned();
+        let args = [
+            rstring("UZUMIBI_DB"),
+            rstring("INSERT INTO t VALUES (?, ?)"),
+            params,
+        ];
+
+        uzumibi_d1_class_query(&mut vm, &args).unwrap();
+
+        let call = FAKE_HOST.with(|s| s.borrow().d1_last_call.clone()).unwrap();
+        assert_eq!(call.2, r#"["a",1]"#);
+    }
+
+    #[test]
+    fn test_d1_query_passes_binding_name_sql_and_result_max_size_through() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| {
+            s.borrow_mut().d1_payload = b"[]".to_vec();
+        });
+        let args = [rstring("UZUMIBI_DB"), rstring("SELECT * FROM widgets")];
+
+        uzumibi_d1_class_query(&mut vm, &args).unwrap();
+
+        let call = FAKE_HOST.with(|s| s.borrow().d1_last_call.clone()).unwrap();
+        assert_eq!(call.0, "UZUMIBI_DB");
+        assert_eq!(call.1, "SELECT * FROM widgets");
+        assert_eq!(call.3, 65536);
+    }
+
+    #[test]
+    fn test_d1_query_error_on_return_code_negative_1() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().d1_return_override = Some(-1));
+        let args = [rstring("UZUMIBI_DB"), rstring("SELECT 1")];
+
+        let err = uzumibi_d1_class_query(&mut vm, &args).unwrap_err();
+        match err {
+            mrubyedge::Error::RuntimeError(msg) => {
+                assert_eq!(msg, "Failed to query D1: D1 binding 'UZUMIBI_DB' not found")
+            }
+            other => panic!("expected RuntimeError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_d1_query_error_on_return_code_negative_3() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().d1_return_override = Some(-3));
+        let args = [rstring("UZUMIBI_DB"), rstring("SELECT 1")];
+
+        let err = uzumibi_d1_class_query(&mut vm, &args).unwrap_err();
+        match err {
+            mrubyedge::Error::RuntimeError(msg) => assert_eq!(
+                msg,
+                "Failed to query D1: D1 result does not fit in the 65536 byte buffer"
+            ),
+            other => panic!("expected RuntimeError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_d1_query_error_on_return_code_negative_2() {
+        let mut vm = setup_vm();
+        FAKE_HOST.with(|s| s.borrow_mut().d1_return_override = Some(-2));
+        let args = [rstring("UZUMIBI_DB"), rstring("SELECT 1")];
+
+        let err = uzumibi_d1_class_query(&mut vm, &args).unwrap_err();
+        match err {
+            mrubyedge::Error::RuntimeError(msg) => assert_eq!(
+                msg,
+                "Failed to query D1: D1 query failed with return code: -2"
+            ),
+            other => panic!("expected RuntimeError, got {:?}", other),
+        }
+    }
+}
