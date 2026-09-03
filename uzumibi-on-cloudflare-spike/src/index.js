@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { instantiate } from "asyncify-wasm";
 import mod from "./uzumibi_on_cloudflare_spike.wasm";
 import { RequestTooLargeError, writeRequestToWasm } from "./request-buffer.js";
+import { assetExists, checkRateLimit, writeD1RowsToWasm } from "./host-bindings.js";
 
 const wasmModule = mod;
 const KV_SET_ERROR_INVALID_OPTIONS_JSON = -2;
@@ -247,13 +248,7 @@ export default {
 					const bindingName = decoder.decode(new Uint8Array(memory.buffer, bindingNamePtr, bindingNameSize));
 					const key = decoder.decode(new Uint8Array(memory.buffer, keyPtr, keySize));
 
-					const limiter = env[bindingName];
-					if (!limiter || typeof limiter.limit !== "function") {
-						console.error(`Rate limit binding '${bindingName}' not found`);
-						return -1;
-					}
-					const { success } = await limiter.limit({ key });
-					return success ? 1 : 0;
+					return checkRateLimit(env, bindingName, key);
 				},
 
 				// Assets.exist?(path) -> 1 when the assets binding serves that path
@@ -261,22 +256,7 @@ export default {
 					const memory = exports.memory;
 					const path = decoder.decode(new Uint8Array(memory.buffer, pathPtr, pathSize));
 
-					if (!env.ASSETS || typeof env.ASSETS.fetch !== "function") {
-						console.error("Assets binding not found");
-						return -1;
-					}
-					// The assets binding wants an absolute URL; only the path is read.
-					const base = typeof request !== "undefined" && request
-						? new URL(request.url).origin
-						: "http://assets.local";
-					let url;
-					try {
-						url = new URL(path, base);
-					} catch {
-						return 0;
-					}
-					const response = await env.ASSETS.fetch(new Request(url));
-					return response.ok ? 1 : 0;
+					return assetExists(env, path, new URL(request.url).origin);
 				},
 
 				// D1.query(binding_name, sql, params_json) -> JSON array of rows
@@ -288,32 +268,7 @@ export default {
 						? decoder.decode(new Uint8Array(memory.buffer, paramsPtr, paramsSize))
 						: "[]";
 
-					const db = env[bindingName];
-					if (!db || typeof db.prepare !== "function") {
-						console.error(`D1 binding '${bindingName}' not found`);
-						return -1;
-					}
-
-					let rows;
-					try {
-						const params = JSON.parse(paramsJson);
-						const statement = params.length > 0
-							? db.prepare(sql).bind(...params)
-							: db.prepare(sql);
-						rows = (await statement.all()).results ?? [];
-					} catch (error) {
-						console.error(`D1 query failed: ${(error && error.message) || error}`);
-						return -2;
-					}
-
-					// Truncating would hand back unparsable JSON, so an oversized result fails.
-					const rowBytes = encoder.encode(JSON.stringify(rows));
-					if (rowBytes.length > resultMaxSize) {
-						console.error(`D1 result of ${rowBytes.length} bytes exceeds the ${resultMaxSize} byte buffer`);
-						return -3;
-					}
-					new Uint8Array(memory.buffer, resultPtr, resultMaxSize).set(rowBytes);
-					return rowBytes.length;
+					return writeD1RowsToWasm(exports, env, bindingName, sql, paramsJson, resultPtr, resultMaxSize);
 				},
 			},
 		};
